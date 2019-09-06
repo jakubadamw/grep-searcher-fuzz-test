@@ -2,7 +2,38 @@
 extern crate honggfuzz;
 
 const ALPHABET: &[u8] = b"ATCG";
+const REGEX_ALPHABET: &[u8] = b"ATCG{}[]?*0123456789";
 const MAX_REPEAT: u32 = 10;
+
+fn has_valid_braces(s: &str) -> bool {
+    let open: &[u8] = b"[{";
+    let close: &[u8] = b"]}";
+    let mut kind: Option<usize> = None;
+    let mut distance: usize = 0;
+
+    for byte in s.as_bytes() {
+        if kind.is_some() {
+            distance += 1;
+        }
+        if let Some(open_kind) = open.iter().position(|b| b == byte) {
+            if kind.is_some() {
+                return false;
+            }
+            kind = Some(open_kind);
+        } else if let Some(close_kind) = close.iter().position(|b| b == byte) {
+            if kind == Some(1) && distance > 3 {
+                return false;
+            }
+            distance = 0;
+            if kind != Some(close_kind) {
+                return false;
+            }
+            kind = None;
+        }
+    }
+
+    kind.is_none()
+}
 
 fn fuzz_cycle(data: &[u8]) -> Result<(), ()> {
     use arbitrary::{Arbitrary, FiniteBuffer};
@@ -16,19 +47,13 @@ fn fuzz_cycle(data: &[u8]) -> Result<(), ()> {
 
     let mut regex_bytes: Vec<u8> = Arbitrary::arbitrary(&mut ring)?;
     for byte in &mut regex_bytes {
-        *byte = ALPHABET[*byte as usize % ALPHABET.len()];
+        *byte = REGEX_ALPHABET[*byte as usize % REGEX_ALPHABET.len()];
     }
-    let mut regex_string = String::from_utf8(regex_bytes).unwrap();
-    let pos: usize = usize::arbitrary(&mut ring)? % (regex_string.len() + 1);
-    let (min, max): (Option<u32>, Option<u32>) = Arbitrary::arbitrary(&mut ring)?;
-    let min_string = min
-        .filter(|n| *n != 0)
-        .map_or(String::new(), |n| (n % MAX_REPEAT).to_string());
-    let max_string = max
-        .filter(|n| *n != 0)
-        .map_or(String::new(), |n| (n % MAX_REPEAT).to_string());
-    regex_string.insert_str(pos, &format!("[ATCG]{{{},{}}}", min_string, max_string));
+    let regex_string = String::from_utf8(regex_bytes).unwrap();
     // regex_string = String::from("TTGAGTCCAGGAG[TAGC]{2}C");
+    if !has_valid_braces(&regex_string) {
+        return Err(());
+    }
 
     let matcher = RegexMatcher::new_line_matcher(&regex_string).map_err(|_| ())?;
     let seed: u64 = Arbitrary::arbitrary(&mut ring)?;
